@@ -1,49 +1,182 @@
-// The starter's HTTP surface, exactly as it ships: a health probe and an API root, and a JSON 404
-// for everything else. The contest's real surface — git smart HTTP, REST v3 resources, GraphQL v4 and
-// the MCP endpoint — is what you add (README.md names it, and the rules link below says what scores).
-//
-// app.ts is deliberately separate from main.ts: this is the server, the file you grow; main.ts is the
-// entry <-> env lifecycle and should stay as it is.
+// The forge's HTTP surface: one server, five faces — the boot probe, git smart HTTP under
+// /{owner}/{repo}.git, REST v3 under /api/v3, GraphQL at /api/graphql and MCP at /mcp. Every REST
+// reply is JSON with a request id; an unknown route is a JSON 404, never HTML.
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer } from 'node:http';
+import { findRepo } from './store.ts';
+import { handleGit } from './gitproto.ts';
+import { handleRest } from './rest.ts';
+import { handleGraphQL } from './gql.ts';
+import { handleMcp } from './mcp.ts';
 
+const TOKEN = process.env.MAKEFUN_SHOP_TOKEN ?? '';
 const JSON_TYPE = 'application/json; charset=utf-8';
+let requestCounter = 0;
 
-/** Answer one request with a JSON body; `headers` go beside the JSON ones. */
-function sendJson(res: ServerResponse, status: number, body: unknown, headers: Readonly<Record<string, string>> = {}): void {
+function requestId() {
+  requestCounter += 1;
+  return `mf-${process.pid.toString(16)}-${requestCounter.toString(16)}-${Date.now().toString(16)}`;
+}
+
+function sendJson(res, status, body, extra) {
   const text = `${JSON.stringify(body)}\n`;
-  res.writeHead(status, { 'content-type': JSON_TYPE, 'content-length': Buffer.byteLength(text), ...headers });
+  const headers = {
+    'content-type': JSON_TYPE,
+    'content-length': Buffer.byteLength(text),
+    'x-github-request-id': requestId(),
+    ...(extra ?? {}),
+  };
+  res.writeHead(status, headers);
   res.end(text);
 }
 
-/** The path of a request URL, or '/' when it does not parse (never a throw from a request). */
-function pathOf(req: IncomingMessage): string {
-  try {
-    return new URL(req.url ?? '/', 'http://entry').pathname;
-  } catch {
-    return '/';
-  }
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > 256 * 1024 * 1024) {
+        reject(new Error('request body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
 }
 
-/** Build the server. It binds nothing until the caller listens; the entry listens on an ephemeral port. */
-export function createApp(): Server {
-  return createServer((req: IncomingMessage, res: ServerResponse) => {
-    const path = pathOf(req);
-    const method = req.method ?? 'GET';
+function authorized(req) {
+  if (TOKEN === '') return false;
+  const header = req.headers.authorization;
+  if (typeof header !== 'string') return false;
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  if (match === null) return false;
+  return match[1].trim() === TOKEN;
+}
 
-    // The env's boot check calls this twice: 200 {"ok":true}.
-    if (method === 'GET' && path === '/healthz') {
+export function createApp() {
+  return createServer((req, res) => {
+    const method = req.method ?? 'GET';
+    let url;
+    try {
+      url = new URL(req.url ?? '/', 'http://entry');
+    } catch {
+      sendJson(res, 404, { message: 'Not Found' });
+      return;
+    }
+    const path = url.pathname;
+    const query = Object.fromEntries(url.searchParams.entries());
+    const segments = path.split('/').filter((part) => part !== '').map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    });
+
+    if (path === '/healthz' && method === 'GET') {
       sendJson(res, 200, { ok: true });
       return;
     }
 
-    // The GitHub API root: a 200 with the token's scopes, as api.github.com answers GET /.
-    if (method === 'GET' && (path === '/api/v3' || path === '/api/v3/')) {
-      sendJson(res, 200, { current_user_url: '/api/v3/user', rate_limit_url: '/api/v3/rate_limit' }, { 'x-oauth-scopes': 'repo, read:org' });
+    if (path === '/api/graphql') {
+      if (method !== 'POST') {
+        sendJson(res, 405, { message: 'Method not allowed' });
+        return;
+      }
+      if (!authorized(req)) {
+        sendJson(res, 401, { message: 'Requires authentication' });
+        return;
+      }
+      readBody(req).then((body) => {
+        const answer = handleGraphQL(body);
+        sendJson(res, answer.status, answer.json, answer.headers);
+      }).catch(() => sendJson(res, 400, { message: 'Problems parsing JSON' }));
       return;
     }
 
-    // Everything else, every method: GitHub's 404 body.
+    if (path === '/mcp') {
+      if (method === 'DELETE') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (method !== 'POST') {
+        sendJson(res, 405, { message: 'Method not allowed' });
+        return;
+      }
+      readBody(req).then((body) => {
+        const answer = handleMcp(body, authorized(req));
+        if (answer.json === undefined) {
+          res.writeHead(answer.status);
+          res.end();
+          return;
+        }
+        sendJson(res, answer.status, answer.json);
+      }).catch(() => sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }));
+      return;
+    }
+
+    if (path === '/api/v3' || path.startsWith('/api/v3/')) {
+      const rest = segments.slice(2);
+      if (!authorized(req)) {
+        sendJson(res, 401, { message: 'Requires authentication' });
+        return;
+      }
+      readBody(req).then((body) => {
+        const origin = `http://${req.headers.host ?? 'entry'}`;
+        let answer;
+        try {
+          answer = handleRest(method, rest, query, body, origin);
+        } catch (err) {
+          answer = { status: 500, json: { message: err instanceof Error ? err.message : 'internal error' } };
+        }
+        if (answer.json === undefined) {
+          res.writeHead(answer.status, { 'x-github-request-id': requestId() });
+          res.end();
+          return;
+        }
+        sendJson(res, answer.status, answer.json, answer.headers);
+      }).catch(() => sendJson(res, 400, { message: 'Problems parsing JSON' }));
+      return;
+    }
+
+    const git = /^\/([^/]+)\/([^/]+)\.git(\/.*)?$/.exec(path);
+    if (git !== null) {
+      const owner = decodeURIComponent(git[1]);
+      const name = decodeURIComponent(git[2]);
+      const sub = git[3] ?? '';
+      const repo = findRepo(owner, name);
+      if (repo === null) {
+        sendJson(res, 404, { message: 'Not Found' });
+        return;
+      }
+      if (method === 'GET' && sub === '/info/refs') {
+        const service = typeof query.service === 'string' ? query.service : '';
+        if (service !== 'git-upload-pack' && service !== 'git-receive-pack') {
+          sendJson(res, 403, { message: 'Smart HTTP only' });
+          return;
+        }
+        handleGit(res, repo, service, sub, query, req.headers, Buffer.alloc(0));
+        return;
+      }
+      if (method === 'POST' && (sub === '/git-upload-pack' || sub === '/git-receive-pack')) {
+        readBody(req).then((body) => {
+          try {
+            handleGit(res, repo, sub.slice(1), sub, query, req.headers, body);
+          } catch (err) {
+            sendJson(res, 400, { message: err instanceof Error ? err.message : 'bad request' });
+          }
+        }).catch(() => sendJson(res, 400, { message: 'bad request' }));
+        return;
+      }
+      sendJson(res, 404, { message: 'Not Found' });
+      return;
+    }
+
     sendJson(res, 404, { message: 'Not Found' });
   });
 }
