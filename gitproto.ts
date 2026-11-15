@@ -395,6 +395,15 @@ function sideband(pack) {
 
 function fetchResponse(repo, request) {
   const { wants, haves, shallowGiven, depth } = request;
+  // A shallow clone with no haves depends only on the object graph behind `wants`, which moves only
+  // when a ref moves: cache the whole answer for one generation. 50 concurrent clones of one tip
+  // then build the pack once instead of fifty times.
+  const cacheable = haves.length === 0 && shallowGiven.length === 0 && depth !== null;
+  const cacheKey = cacheable ? `d${depth}|${[...wants].sort().join(',')}` : null;
+  if (cacheKey !== null) {
+    const cached = repo.fetchCache.get(cacheKey);
+    if (cached !== undefined && cached.gen === repo.gen) return cached.body;
+  }
   const parts = [];
   const known = haves.filter((have) => repo.hasObject(have));
   if (haves.length > 0) {
@@ -449,7 +458,9 @@ function fetchResponse(repo, request) {
     if (object !== undefined) list.push(object);
   }
   parts.push(sideband(writePack(list)));
-  return Buffer.concat(parts);
+  const body = Buffer.concat(parts);
+  if (cacheKey !== null) repo.fetchCache.set(cacheKey, { gen: repo.gen, body });
+  return body;
 }
 
 // ---------------------------------------------------------------- receive-pack

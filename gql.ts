@@ -605,6 +605,7 @@ const ROOT = {
     if (found === null) throw new Error('Could not resolve to an Issue with that id');
     const comment = { id: 900000 + found.repo.comments.length + 1, issueNumber: found.issue.number, body: args.input?.body ?? '', createdAt: new Date().toISOString(), author: VIEWER };
     found.repo.comments.push(comment);
+    found.issue.commentCount = (found.issue.commentCount ?? 0) + 1;
     return { __type: 'AddCommentPayload', comment: { __type: 'IssueComment', comment } };
   },
 };

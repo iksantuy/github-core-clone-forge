@@ -80,7 +80,7 @@ export function issueJson(repo, issue) {
     assignee: null,
     assignees: [],
     milestone: null,
-    comments: repo.comments.filter((comment) => comment.issueNumber === issue.number).length,
+    comments: issue.commentCount ?? 0,
     locked: false,
     author_association: 'OWNER',
     created_at: issue.createdAt,
@@ -628,6 +628,7 @@ export function handleRest(method, segments, query, body, origin) {
         if (text === '') return fail(422, 'Validation Failed: body is required');
         const comment = { id: newCommentId(), issueNumber: issue.number, body: text, createdAt: nowIso(), author: VIEWER };
         repo.comments.push(comment);
+        issue.commentCount = (issue.commentCount ?? 0) + 1;
         return json(201, commentJson(repo, comment));
       }
       return fail(405, 'Method not allowed');

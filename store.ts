@@ -130,6 +130,9 @@ export class Repo {
     this.labels = new Map();
     this.treeCache = new Map();
     this.commitCache = new Map();
+    // Bumped whenever a ref moves: a cached fetch response is valid only for one generation.
+    this.gen = 0;
+    this.fetchCache = new Map();
   }
 
   key() {
@@ -242,10 +245,12 @@ export class Repo {
   setRef(ref, oid) {
     this.refs.set(ref, oid);
     this.pushedAt = new Date().toISOString();
+    this.gen += 1;
   }
 
   deleteRef(ref) {
     this.refs.delete(ref);
+    this.gen += 1;
   }
 
   branches() {
