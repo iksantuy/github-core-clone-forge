@@ -113,6 +113,8 @@ export class Repo {
   constructor(owner, name, options = {}) {
     this.owner = owner;
     this.name = name;
+    /** `owner/name`, built once: every reply URL and key derives from it, and it never changes. */
+    this.full = `${owner}/${name}`;
     this.id = nextRepoId++;
     this.private = options.private === true;
     this.description = typeof options.description === 'string' ? options.description : '';
@@ -157,11 +159,11 @@ export class Repo {
   }
 
   key() {
-    return `${this.owner}/${this.name}`;
+    return this.full;
   }
 
   fullName() {
-    return `${this.owner}/${this.name}`;
+    return this.full;
   }
 
   putObject(type, data) {
