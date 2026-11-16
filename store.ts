@@ -123,16 +123,37 @@ export class Repo {
     this.refs = new Map();
     this.objects = new Map();
     this.issues = [];
+    /** Issue number -> the issue object, so a read is one Map probe instead of a scan of the array. */
+    this.issueIndex = new Map();
     this.issueSeq = 0;
     this.comments = [];
     this.pulls = [];
     this.pullSeq = 0;
     this.labels = new Map();
+    /** Bumped when a label is created: an issue's rendered label objects depend on it. */
+    this.labelGen = 0;
     this.treeCache = new Map();
     this.commitCache = new Map();
     // Bumped whenever a ref moves: a cached fetch response is valid only for one generation.
     this.gen = 0;
     this.fetchCache = new Map();
+    // A cached JSON rendering per rendered record, keyed by the record's content signature: the read
+    // workload is thousands of GETs of one issue, and a hit removes a stringify and a Buffer.from.
+    this.renderCache = new Map();
+  }
+
+  /**
+   * A reply body for one record, rendered once and reused while its content signature holds. The
+   * read workload is thousands of GETs of the same issue, so a hit saves the JSON.stringify and the
+   * Buffer.from of every response. The signature is computed from the fields the rendering reads, so
+   * a mutation can never leave a stale body behind: no invalidation call to forget.
+   */
+  renderCached(slot, signature, make) {
+    const cached = this.renderCache.get(slot);
+    if (cached !== undefined && cached.signature === signature) return cached.buf;
+    const buf = Buffer.from(`${JSON.stringify(make())}\n`, 'utf8');
+    this.renderCache.set(slot, { signature, buf });
+    return buf;
   }
 
   key() {
@@ -307,6 +328,24 @@ export class Repo {
   nextIssueNumber() {
     this.issueSeq += 1;
     return this.issueSeq;
+  }
+
+  /** Record an issue in both the ordered list and the number index. */
+  addIssue(issue) {
+    this.issues.push(issue);
+    this.issueIndex.set(issue.number, issue);
+    return issue;
+  }
+
+  /** The issue with that number: one Map probe, not a scan of every issue in the repository. */
+  issueByNumber(number) {
+    const found = this.issueIndex.get(number);
+    if (found !== undefined) return found;
+    for (const issue of this.issues) if (issue.number === number) {
+      this.issueIndex.set(number, issue);
+      return issue;
+    }
+    return undefined;
   }
 
   nextPullNumber() {

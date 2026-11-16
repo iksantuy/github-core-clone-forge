@@ -361,7 +361,7 @@ const RESOLVERS = {
     diskUsage: () => 0,
     labels: (node) => [...node.repo.labels.values()].map((label) => ({ __type: 'Label', label })),
     issue: (node, args) => {
-      const issue = node.repo.issues.find((entry) => entry.number === args.number);
+      const issue = node.repo.issueByNumber(args.number);
       return issue === undefined ? null : issueNode(node.repo, issue);
     },
     issues: (node, args) => {
@@ -565,7 +565,7 @@ const ROOT = {
     const number = repo.nextIssueNumber();
     const stamp = new Date().toISOString();
     const issue = { id: newIssueId(), number, title: input.title ?? '', body: input.body ?? '', state: 'open', labels: [], createdAt: stamp, updatedAt: stamp, closedAt: null, author: VIEWER };
-    repo.issues.push(issue);
+    repo.addIssue(issue);
     return { __type: 'CreateIssuePayload', issue: issueNode(repo, issue) };
   },
   closeIssue: (args) => {

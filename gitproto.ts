@@ -327,6 +327,13 @@ function v2Advertisement() {
   return Buffer.concat(parts);
 }
 
+/** The v2 capability advertisement is a constant: build it once, not once per clone. */
+let v2AdvertBuf = null;
+function v2AdvertisementCached() {
+  if (v2AdvertBuf === null) v2AdvertBuf = v2Advertisement();
+  return v2AdvertBuf;
+}
+
 function v0RefAdvertisement(repo, service) {
   const caps = service === 'git-upload-pack'
     ? capabilityList([`symref=HEAD:refs/heads/${repo.defaultBranch}`]).join(' ')
@@ -379,6 +386,23 @@ function lsRefs(repo, options) {
   }
   lines.push(FLUSH);
   return Buffer.concat(lines);
+}
+
+/**
+ * ls-refs depends only on the refs and the options, and a batch of concurrent clones all ask the same
+ * question: keep the last answer per option shape and reuse it until a ref moves.
+ */
+const lsRefsCache = new Map();
+function lsRefsCached(repo, options) {
+  const { prefixes, peel, symrefs, unborn } = options;
+  const key = `${repo.key()}\u0000${repo.gen}\u0000${peel ? 1 : 0}${symrefs ? 1 : 0}${unborn ? 1 : 0}\u0000${prefixes.join('\u0001')}`;
+  const cached = lsRefsCache.get(key);
+  if (cached !== undefined) return cached;
+  const buf = lsRefs(repo, options);
+  // One entry per repository and option shape is enough: a clone batch repeats the same request.
+  if (lsRefsCache.size > 64) lsRefsCache.clear();
+  lsRefsCache.set(key, buf);
+  return buf;
 }
 
 // ---------------------------------------------------------------- fetch
@@ -559,7 +583,7 @@ export function handleGit(res, repo, service, sub, query, headers, body) {
     if (service === 'git-upload-pack') {
       const protocol = (headers['git-protocol'] ?? '').toString();
       const v2 = /version=2/.test(protocol);
-      send(res, 200, 'application/x-git-upload-pack-advertisement', v2 ? v2Advertisement() : v0RefAdvertisement(repo, 'git-upload-pack'));
+      send(res, 200, 'application/x-git-upload-pack-advertisement', v2 ? v2AdvertisementCached() : v0RefAdvertisement(repo, 'git-upload-pack'));
       return true;
     }
     if (service === 'git-receive-pack') {
@@ -588,7 +612,7 @@ export function handleGit(res, repo, service, sub, query, headers, body) {
         else if (line === 'unborn') options.unborn = true;
         else if (line.startsWith('ref-prefix ')) options.prefixes.push(line.slice(11));
       }
-      send(res, 200, 'application/x-git-upload-pack-result', lsRefs(repo, options));
+      send(res, 200, 'application/x-git-upload-pack-result', lsRefsCached(repo, options));
       return true;
     }
     if (command === 'command=fetch') {

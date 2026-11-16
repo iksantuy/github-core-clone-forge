@@ -67,6 +67,7 @@ function labelJson(repo, label) {
 }
 
 export function issueJson(repo, issue) {
+  const full = repo.fullName();
   return {
     id: issue.id,
     node_id: globalId('Issue', issue.id),
@@ -87,9 +88,19 @@ export function issueJson(repo, issue) {
     updated_at: issue.updatedAt,
     closed_at: issue.closedAt ?? null,
     closed_by: null,
-    html_url: `https://github.com/${repo.fullName()}/issues/${issue.number}`,
-    url: `/api/v3/repos/${repo.fullName()}/issues/${issue.number}`,
+    html_url: `https://github.com/${full}/issues/${issue.number}`,
+    url: `/api/v3/repos/${full}/issues/${issue.number}`,
   };
+}
+
+/**
+ * Everything `issueJson` renders, in one comparable string. A cached body is reused only while this
+ * is unchanged, so a title, body, state, label set, comment count or timestamp edit always re-renders
+ * — and a label created after the first render changes `labelGen`, so it cannot go stale either.
+ */
+function issueSignature(repo, issue) {
+  const labels = issue.labels.length === 0 ? '' : issue.labels.join('\u0001');
+  return `${repo.owner}/${repo.name}\u0000${repo.labelGen}\u0000${issue.id}\u0000${issue.number}\u0000${issue.state}\u0000${issue.title}\u0000${issue.body ?? ''}\u0000${labels}\u0000${issue.author ?? ''}\u0000${issue.commentCount ?? 0}\u0000${issue.createdAt}\u0000${issue.updatedAt}\u0000${issue.closedAt ?? ''}`;
 }
 
 function commentJson(repo, comment) {
@@ -309,6 +320,8 @@ function parseBody(body) {
 export function handleRest(method, segments, query, body, origin) {
   const path = segments.join('/');
   const json = (status, value, headers) => ({ status, json: value, headers });
+  /** A reply whose body is already the exact bytes to write (see Repo.renderCached). */
+  const raw = (status, buf, headers) => ({ status, body: buf, headers: headers ?? {} });
   let input;
   try {
     input = parseBody(body);
@@ -374,6 +387,7 @@ export function handleRest(method, segments, query, body, origin) {
         renamed.objects = repo.objects;
         renamed.refs = repo.refs;
         renamed.issues = repo.issues;
+        renamed.issueIndex = repo.issueIndex;
         renamed.issueSeq = repo.issueSeq;
         renamed.comments = repo.comments;
         renamed.pulls = repo.pulls;
@@ -547,6 +561,7 @@ export function handleRest(method, segments, query, body, origin) {
       if (labelName === '') return fail(422, 'Validation Failed: name is required');
       const label = { id: newLabelId(), name: labelName, color: typeof input.color === 'string' ? input.color : 'ededed' };
       repo.labels.set(labelName, label);
+      repo.labelGen += 1;
       return json(201, labelJson(repo, label));
     }
     return fail(405, 'Method not allowed');
@@ -590,16 +605,19 @@ export function handleRest(method, segments, query, body, origin) {
           closedAt: null,
           author: VIEWER,
         };
-        repo.issues.push(issue);
+        repo.addIssue(issue);
         return json(201, issueJson(repo, issue));
       }
       return fail(405, 'Method not allowed');
     }
     const number = Number.parseInt(rest[1], 10);
-    const issue = repo.issues.find((entry) => entry.number === number);
+    const issue = repo.issueByNumber(number);
     if (issue === undefined) return fail(404, 'Not Found');
     if (rest.length === 2) {
-      if (method === 'GET') return json(200, issueJson(repo, issue));
+      if (method === 'GET') {
+        const slot = `i${issue.number}`;
+        return raw(200, repo.renderCached(slot, issueSignature(repo, issue), () => issueJson(repo, issue)));
+      }
       if (method === 'PATCH') {
         if (typeof input.title === 'string' && input.title !== '') issue.title = input.title;
         if (typeof input.body === 'string') issue.body = input.body;

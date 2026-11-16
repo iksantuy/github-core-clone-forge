@@ -149,7 +149,7 @@ const HANDLERS = {
     const number = repo.nextIssueNumber();
     const stamp = new Date().toISOString();
     const issue = { id: newIssueId(), number, title, body: typeof args.body === 'string' ? args.body : '', state: 'open', labels: [], createdAt: stamp, updatedAt: stamp, closedAt: null, author: VIEWER };
-    repo.issues.push(issue);
+    repo.addIssue(issue);
     return issueJson(repo, issue);
   },
   list_issues(args) {
