@@ -123,6 +123,12 @@ function pathSegments(path) {
   return out;
 }
 
+/** The `/api/v3` route segments and the route key the router matches on, in one pass. */
+function restRoute(path) {
+  const segments = pathSegments(path);
+  return { segments: segments.slice(2), key: segments.length <= 2 ? '' : segments.slice(2).join('/') };
+}
+
 export function createApp() {
   return createServer((req, res) => {
     const method = req.method ?? 'GET';

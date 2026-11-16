@@ -315,10 +315,12 @@ function parseBody(body) {
 
 /**
  * Handle one /api/v3 request. `segments` are the decoded path parts after the prefix, `query` the
- * parsed query string, `body` the raw request body, `origin` the request's scheme://host.
+ * parsed query string, `body` the raw request body, `origin` the request's scheme://host, and `path`
+ * the same segments joined by "/" — the caller already has that string, so it is passed in rather
+ * than rebuilt for every request.
  */
-export function handleRest(method, segments, query, body, origin) {
-  const path = segments.join('/');
+export function handleRest(method, segments, query, body, origin, path) {
+  const route = path === undefined ? segments.join('/') : path;
   const json = (status, value, headers) => ({ status, json: value, headers });
   /** A reply whose body is already the exact bytes to write (see Repo.renderCached). */
   const raw = (status, buf, headers) => ({ status, body: buf, headers: headers ?? {} });
@@ -330,21 +332,21 @@ export function handleRest(method, segments, query, body, origin) {
   }
   if (typeof input !== 'object' || input === null || Array.isArray(input)) input = {};
 
-  if (path === '' && method === 'GET') {
+  if (route === '' && method === 'GET') {
     return json(200, { current_user_url: `${origin}/api/v3/user`, repository_url: `${origin}/api/v3/repos/{owner}/{repo}`, user_url: `${origin}/api/v3/users/{user}`, rate_limit_url: `${origin}/api/v3/rate_limit` }, { 'x-oauth-scopes': 'repo, read:org' });
   }
-  if (path === 'meta' && method === 'GET') return json(200, { installed_version: VERSION, verifiable_password_authentication: false });
-  if (path === 'rate_limit' && method === 'GET') return json(200, { resources: {}, rate: { limit: 5000, remaining: 4999, reset: 0, used: 1 } });
-  if (path === 'user' && method === 'GET') {
+  if (route === 'meta' && method === 'GET') return json(200, { installed_version: VERSION, verifiable_password_authentication: false });
+  if (route === 'rate_limit' && method === 'GET') return json(200, { resources: {}, rate: { limit: 5000, remaining: 4999, reset: 0, used: 1 } });
+  if (route === 'user' && method === 'GET') {
     return json(200, { login: VIEWER, id: 1000, node_id: globalId('User', 1000), name: VIEWER_NAME, email: VIEWER_EMAIL, type: 'User', site_admin: false, public_repos: 0, followers: 0, following: 0 });
   }
-  if (path === 'users' && method === 'GET') return json(200, []);
+  if (route === 'users' && method === 'GET') return json(200, []);
   if (segments[0] === 'users' && segments.length === 2 && method === 'GET') {
     const login = segments[1];
     return json(200, { login, id: login === VIEWER ? 1000 : 1002, node_id: globalId('User', 1002), name: login, type: 'User' });
   }
 
-  if (path === 'user/repos') {
+  if (route === 'user/repos') {
     if (method === 'GET') {
       const all = listRepos(VIEWER);
       const page = paginate(all, query);
