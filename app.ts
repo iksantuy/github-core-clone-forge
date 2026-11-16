@@ -190,11 +190,11 @@ export function createApp() {
         sendJson(res, 401, { message: 'Requires authentication' });
         return;
       }
-      const rest = pathSegments(path).slice(2);
+      const route = restRoute(path);
       const answerOf = (body) => {
         const origin = `http://${req.headers.host ?? 'entry'}`;
         try {
-          return handleRest(method, rest, parseQuery(target.search), body, origin);
+          return handleRest(method, route.segments, parseQuery(target.search), body, origin, route.key);
         } catch (err) {
           return { status: 500, json: { message: err instanceof Error ? err.message : 'internal error' } };
         }
